@@ -710,6 +710,11 @@ static struct gguf_context * gguf_init_from_reader(const struct gguf_reader & gr
         {
             ok = ok && gr.read(info.t.type);
 
+            // Legacy compatibility: Older BitNet models encoded TQ2_0 as 42
+            if (info.t.type == 42) {
+                info.t.type = GGML_TYPE_TQ2_0;
+            }
+
             // check that tensor type is within defined range
             if (info.t.type < 0 || info.t.type >= GGML_TYPE_COUNT) {
                 GGML_LOG_ERROR("%s: tensor '%s' has invalid ggml type %d. should be in [0, %d)\n",

@@ -1505,6 +1505,19 @@ void ggml_vec_dot_tq1_0_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const vo
 #endif
 }
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+    int cluaiz_fast_ternary_dot(
+        const uint8_t * packed_weights,
+        const int8_t * activations,
+        int32_t * output,
+        size_t count
+    );
+#ifdef __cplusplus
+}
+#endif
+
 void ggml_vec_dot_tq2_0_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(nrc == 1);
     UNUSED(nrc);
@@ -1516,6 +1529,26 @@ void ggml_vec_dot_tq2_0_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const vo
     const block_q8_K  * GGML_RESTRICT y = vy;
 
     const int nb = n / QK_K;
+
+    // Multi-block fast ternary dot execution
+    float cluaiz_total_sum = 0.0f;
+    bool cluaiz_success = true;
+    for (int i = 0; i < nb; ++i) {
+        int32_t cluaiz_out = 0;
+        if (cluaiz_fast_ternary_dot((const uint8_t*)x[i].qs, (const int8_t*)y[i].qs, &cluaiz_out, QK_K) == 0) {
+            float d_x = GGML_FP16_TO_FP32(x[i].d);
+            float d_y = GGML_FP16_TO_FP32(y[i].d);
+            cluaiz_total_sum += ((float)cluaiz_out * d_x * d_y);
+        } else {
+            cluaiz_success = false;
+            break;
+        }
+    }
+
+    if (cluaiz_success) {
+        *s = cluaiz_total_sum;
+        return;
+    }
 
 #if defined(__AVX2__)
     __m256 sumf = _mm256_setzero_ps();
