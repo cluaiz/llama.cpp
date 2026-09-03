@@ -50,8 +50,12 @@ static __device__ __forceinline__ void dequantize_q4_0(const void * vx, const in
 
     const int vui = x[ib].qs[iqs];
 
-    v.x = vui & 0xF;
-    v.y = vui >> 4;
+    // 1-Cycle PTX bfe.u32 for fast 4-bit extraction
+    unsigned int vx_int, vy_int;
+    asm volatile("bfe.u32 %0, %1, 0, 4;" : "=r"(vx_int) : "r"((unsigned int)vui));
+    asm volatile("bfe.u32 %0, %1, 4, 4;" : "=r"(vy_int) : "r"((unsigned int)vui));
+    v.x = vx_int;
+    v.y = vy_int;
 
     v.x = (v.x - 8.0f) * d;
     v.y = (v.y - 8.0f) * d;
