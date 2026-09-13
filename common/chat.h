@@ -386,3 +386,35 @@ struct common_chat_prompt_preset {
 common_chat_prompt_preset common_chat_get_asr_prompt(const common_chat_templates * chat_templates);
 
 common_chat_msg_delimiters common_chat_msg_delimiters_parse(const common_json & delimiters);
+
+extern "C" {
+
+#if defined(_WIN32)
+#define LLAMA_COMMON_API __declspec(dllexport)
+#else
+#define LLAMA_COMMON_API __attribute__((visibility("default")))
+#endif
+
+LLAMA_COMMON_API bool llama_chat_extract_thinking_tags(
+    const struct llama_model * model,
+    const char * custom_tmpl,
+    char * out_start,
+    size_t max_start_len,
+    char * out_end,
+    size_t max_end_len
+);
+
+LLAMA_COMMON_API int32_t llama_chat_apply_template_native(
+    const struct llama_model * model,
+    const char * custom_tmpl,
+    const char ** roles,
+    const char ** contents,
+    size_t n_messages,
+    bool add_ass,
+    bool enable_thinking,
+    char * buf,
+    size_t buf_size
+);
+
+}
+

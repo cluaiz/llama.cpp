@@ -3913,3 +3913,94 @@ std::map<std::string, bool> common_chat_templates_get_caps(const common_chat_tem
     }
     return chat_templates->template_default->caps.to_map();
 }
+
+extern "C" {
+
+LLAMA_COMMON_API bool llama_chat_extract_thinking_tags(
+    const struct llama_model * model,
+    const char * custom_tmpl,
+    char * out_start,
+    size_t max_start_len,
+    char * out_end,
+    size_t max_end_len
+) {
+    if (out_start && max_start_len > 0) {
+        out_start[0] = '\0';
+    }
+    if (out_end && max_end_len > 0) {
+        out_end[0] = '\0';
+    }
+
+    std::string tmpl_str = custom_tmpl ? custom_tmpl : "";
+    try {
+        auto tmpls = common_chat_templates_init(model, tmpl_str);
+        if (!tmpls) {
+            return false;
+        }
+
+        common_chat_templates_inputs inputs;
+        inputs.enable_thinking = true;
+        inputs.messages.push_back({ "user", "hi" });
+
+        auto params = common_chat_templates_apply(tmpls.get(), inputs);
+        if (params.supports_thinking) {
+            if (out_start && max_start_len > 0 && !params.thinking_start_tag.empty()) {
+                snprintf(out_start, max_start_len, "%s", params.thinking_start_tag.c_str());
+            }
+            if (out_end && max_end_len > 0 && !params.thinking_end_tags.empty()) {
+                snprintf(out_end, max_end_len, "%s", params.thinking_end_tags[0].c_str());
+            }
+            return true;
+        }
+    } catch (...) {
+        return false;
+    }
+    return false;
+}
+
+LLAMA_COMMON_API int32_t llama_chat_apply_template_native(
+    const struct llama_model * model,
+    const char * custom_tmpl,
+    const char ** roles,
+    const char ** contents,
+    size_t n_messages,
+    bool add_ass,
+    bool enable_thinking,
+    char * buf,
+    size_t buf_size
+) {
+    std::string tmpl_str = custom_tmpl ? custom_tmpl : "";
+    try {
+        auto tmpls = common_chat_templates_init(model, tmpl_str);
+        if (!tmpls) {
+            return -1;
+        }
+
+        common_chat_templates_inputs inputs;
+        inputs.enable_thinking = enable_thinking;
+        inputs.add_generation_prompt = add_ass;
+
+        for (size_t i = 0; i < n_messages; ++i) {
+            common_chat_msg msg;
+            msg.role = roles[i] ? roles[i] : "";
+            msg.content = contents[i] ? contents[i] : "";
+            inputs.messages.push_back(std::move(msg));
+        }
+
+        auto params = common_chat_templates_apply(tmpls.get(), inputs);
+        const std::string & prompt = params.prompt;
+
+        if (buf && buf_size > 0) {
+            size_t to_copy = std::min(prompt.size(), buf_size - 1);
+            memcpy(buf, prompt.data(), to_copy);
+            buf[to_copy] = '\0';
+        }
+
+        return static_cast<int32_t>(prompt.size());
+    } catch (...) {
+        return -1;
+    }
+}
+
+}
+
