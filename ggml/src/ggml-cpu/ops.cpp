@@ -3961,12 +3961,10 @@ static void ggml_compute_forward_rms_norm_f32(
                 }
 
                 const float mean  = sum/ne00;
-                float scale = 1.0f/sqrtf(mean + eps);
+                const float scale = 1.0f/sqrtf(mean + eps);
 
-                // Guard against float underflow/overflow abort on split graphs
-                if (scale <= 0.0f || !std::isfinite(scale)) {
-                    scale = 1.0f;
-                }
+                // if you hit this, likely you got an inf somewhere earlier
+                assert(scale > 0.0f);
 
                 float * y = (float *) ((char *) dst->data + i01*nb1 + i02*nb2 + i03*nb3);
 
