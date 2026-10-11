@@ -419,5 +419,28 @@ LLAMA_COMMON_API int32_t llama_chat_apply_template_native(
     size_t buf_size
 );
 
+// Parsed chat templates kept by the caller: parse once per loaded model, render per message.
+// Must be freed before the model it was created from. NULL on failure.
+struct llama_chat_templates_handle;
+
+LLAMA_COMMON_API struct llama_chat_templates_handle * llama_chat_templates_handle_init(
+    const struct llama_model * model,
+    const char * custom_tmpl
+);
+
+LLAMA_COMMON_API void llama_chat_templates_handle_free(struct llama_chat_templates_handle * handle);
+
+// Same output and return value as llama_chat_apply_template_native, without re-parsing the template.
+LLAMA_COMMON_API int32_t llama_chat_apply_template_handle(
+    const struct llama_chat_templates_handle * handle,
+    const char ** roles,
+    const char ** contents,
+    size_t n_messages,
+    bool add_ass,
+    bool enable_thinking,
+    char * buf,
+    size_t buf_size
+);
+
 }
 

@@ -1582,6 +1582,44 @@ LLAMA_COMMON_API bool llama_chat_extract_thinking_tags(
     return false;
 }
 
+// Renders the messages with already parsed templates; returns the prompt length or -1.
+static int32_t llama_chat_render_with_templates(
+    const common_chat_templates * tmpls,
+    const char ** roles,
+    const char ** contents,
+    size_t n_messages,
+    bool add_ass,
+    bool enable_thinking,
+    char * buf,
+    size_t buf_size
+) {
+    try {
+        common_chat_templates_inputs inputs;
+        inputs.enable_thinking = enable_thinking;
+        inputs.add_generation_prompt = add_ass;
+
+        for (size_t i = 0; i < n_messages; ++i) {
+            common_chat_msg msg;
+            msg.role = roles[i] ? roles[i] : "";
+            msg.content = contents[i] ? contents[i] : "";
+            inputs.messages.push_back(std::move(msg));
+        }
+
+        auto params = common_chat_templates_apply(tmpls, inputs);
+        const std::string & prompt = params.prompt;
+
+        if (buf && buf_size > 0) {
+            size_t to_copy = std::min(prompt.size(), buf_size - 1);
+            memcpy(buf, prompt.data(), to_copy);
+            buf[to_copy] = '\0';
+        }
+
+        return static_cast<int32_t>(prompt.size());
+    } catch (...) {
+        return -1;
+    }
+}
+
 LLAMA_COMMON_API int32_t llama_chat_apply_template_native(
     const struct llama_model * model,
     const char * custom_tmpl,
@@ -1599,31 +1637,49 @@ LLAMA_COMMON_API int32_t llama_chat_apply_template_native(
         if (!tmpls) {
             return -1;
         }
-
-        common_chat_templates_inputs inputs;
-        inputs.enable_thinking = enable_thinking;
-        inputs.add_generation_prompt = add_ass;
-
-        for (size_t i = 0; i < n_messages; ++i) {
-            common_chat_msg msg;
-            msg.role = roles[i] ? roles[i] : "";
-            msg.content = contents[i] ? contents[i] : "";
-            inputs.messages.push_back(std::move(msg));
-        }
-
-        auto params = common_chat_templates_apply(tmpls.get(), inputs);
-        const std::string & prompt = params.prompt;
-
-        if (buf && buf_size > 0) {
-            size_t to_copy = std::min(prompt.size(), buf_size - 1);
-            memcpy(buf, prompt.data(), to_copy);
-            buf[to_copy] = '\0';
-        }
-
-        return static_cast<int32_t>(prompt.size());
+        return llama_chat_render_with_templates(tmpls.get(), roles, contents, n_messages, add_ass, enable_thinking, buf, buf_size);
     } catch (...) {
         return -1;
     }
+}
+
+struct llama_chat_templates_handle {
+    common_chat_templates_ptr tmpls;
+};
+
+LLAMA_COMMON_API struct llama_chat_templates_handle * llama_chat_templates_handle_init(
+    const struct llama_model * model,
+    const char * custom_tmpl
+) {
+    try {
+        auto tmpls = common_chat_templates_init(model, custom_tmpl ? custom_tmpl : "");
+        if (!tmpls) {
+            return nullptr;
+        }
+        return new llama_chat_templates_handle{ std::move(tmpls) };
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+LLAMA_COMMON_API void llama_chat_templates_handle_free(struct llama_chat_templates_handle * handle) {
+    delete handle;
+}
+
+LLAMA_COMMON_API int32_t llama_chat_apply_template_handle(
+    const struct llama_chat_templates_handle * handle,
+    const char ** roles,
+    const char ** contents,
+    size_t n_messages,
+    bool add_ass,
+    bool enable_thinking,
+    char * buf,
+    size_t buf_size
+) {
+    if (!handle || !handle->tmpls) {
+        return -1;
+    }
+    return llama_chat_render_with_templates(handle->tmpls.get(), roles, contents, n_messages, add_ass, enable_thinking, buf, buf_size);
 }
 
 }
