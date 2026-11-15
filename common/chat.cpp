@@ -2030,7 +2030,7 @@ static int32_t llama_chat_render_with_templates(
         }
 
         auto params = common_chat_templates_apply(tmpls, inputs);
-        const std::string & prompt = params.prompt;
+        const std::string prompt = params.prompt.str();
 
         if (buf && buf_size > 0) {
             size_t to_copy = std::min(prompt.size(), buf_size - 1);
