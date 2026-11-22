@@ -1,4 +1,5 @@
 #include "llama-moe-cache.h"
+#include "llama-cluaiz-prefetch.h" // cluaiz: fork-only MoE expert prefetch, see CLUAIZ_PATCHES.md
 
 #include "llama-graph.h"
 #include "llama-impl.h"
@@ -831,6 +832,8 @@ struct llama_moe_cache::impl {
                 l.cpu_experts.push_back(f.expert);
             }
         }
+
+        llama_cluaiz_moe_prefetch(backend, l.experts, fills, cpu); // cluaiz: advisory, off by default, see CLUAIZ_PATCHES.md
 
         // upload the missing experts, consecutive experts going to consecutive slots are uploaded together
         size_t bytes = 0;

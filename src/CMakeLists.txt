@@ -29,6 +29,7 @@ set(LLAMA_CORE_SOURCES
     llama-kv-cache-dsv4.cpp
     llama-memory.cpp
     llama-moe-cache.cpp
+    llama-cluaiz-prefetch.cpp # cluaiz: fork-only, see CLUAIZ_PATCHES.md
     llama-memory-hybrid.cpp
     llama-memory-hybrid-iswa.cpp
     llama-memory-hybrid-idx.cpp
@@ -43,6 +44,12 @@ set(LLAMA_CORE_SOURCES
     unicode-data.cpp
     unicode.cpp
 )
+
+# cluaiz: stop the build when a merge dropped the MoE expert prefetch call (CLUAIZ_PATCHES.md)
+file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/llama-moe-cache.cpp CLUAIZ_MOE_PREFETCH_CALL REGEX "llama_cluaiz_moe_prefetch[(]backend")
+if (NOT CLUAIZ_MOE_PREFETCH_CALL)
+    message(FATAL_ERROR "cluaiz: src/llama-moe-cache.cpp lost the llama_cluaiz_moe_prefetch call in copy(); re-apply it as CLUAIZ_PATCHES.md says")
+endif()
 
 add_library(llama
             ../include/llama.h
