@@ -53,9 +53,102 @@ Known limit: `llama_prefetch` logs one warning per failed call (upstream behavio
 4. Build the Engine (`cargo build -p cmd` in the Engine repo) and run its live check with the MoE cache on
    (`engine/llama/README.md`, section on the MoE expert prefetch).
 
-## Earlier fork-only commits (not yet described in this file)
+## 2. Earlier fork-only commits
 
-From `git log e574a17b0..17d1465f0 --no-merges` on 2026-11-22: `17d1465f0` fix(chat) C ABI prompt,
-`8f9842cd1` embeddinggemma2, `44cf982da` persistent templates handle, `4dfb0b68c` revert of kernel hacks,
-`4f51802a5` GGML_OP_OFFLOAD_MIN_BATCH back to 32, `d81e1b3ff` chat C ABI, `447ab54f6` kernel changes,
-`55551986f` PTX BFE dequantization and RMS-Norm clamp. Their re-apply steps are still to be written.
+From `git log e574a17b0..17d1465f0 --no-merges` (2026-11-22). `e574a17b0` is the upstream side of the last
+merge (`90a3d489b`, upstream at "model : metal : workaround fusion for LFM3 (#32296)", 2026-11-15). What each
+commit still changes today was read with `git show <commit>` and `git diff e574a17b0 HEAD -- <file>`
+(2026-11-23). These commits have no `cluaiz:` markers; the `git grep` above does not find them.
+
+| Commit | Title | Still different from upstream today | Re-apply |
+|---|---|---|---|
+| `55551986f` | PTX BFE CUDA dequantization and RMS-Norm numerical clamp | no (reverted by `4dfb0b68c`) | nothing |
+| `447ab54f6` | kernel optimizations (BitNet AVX2, M-RoPE KV cache, cached CUDA context, legacy GGUF mapping) | only the M-RoPE part in `src/llama-kv-cache.cpp` (the rest reverted by `4f51802a5` and `4dfb0b68c`) | section 2.2 |
+| `d81e1b3ff` | expose C-ABI for native thinking tags extraction and prompt templating | yes, `common/chat.{h,cpp}` (its `src/llama-sampler.cpp` change was reverted by `4dfb0b68c`) | section 2.1 |
+| `4f51802a5` | restore default GGML_OP_OFFLOAD_MIN_BATCH to 32 | no: `ggml/src/ggml-cuda/ggml-cuda.cu` equals upstream | nothing |
+| `4dfb0b68c` | revert unverified kernel hacks and numerical overrides | no: its 5 files equal upstream | nothing |
+| `44cf982da` | persistent templates handle to eliminate per-message re-parsing | yes, `common/chat.{h,cpp}` | section 2.1 |
+| `8f9842cd1` | model: support embeddinggemma2 (text+vision+audio) | no: a backport of upstream PR #30054, which upstream has as `4fbc76dec` (2026-10-06); its 10 files equal upstream | nothing |
+| `17d1465f0` | render the C ABI prompt with common_chat_prompt::str() | yes, `common/chat.cpp` | section 2.1 |
+
+`git diff --stat e574a17b0 HEAD` lists only these fork files: `CLUAIZ_PATCHES.md`, `common/chat.cpp` (+147),
+`common/chat.h` (+55), `src/llama-kv-cache.cpp` (+6 -2), and the section 1 files.
+
+### 2.1 Chat C ABI (`d81e1b3ff`, `44cf982da`, `17d1465f0`)
+
+What it does: plain C functions over upstream's chat template code in `common/`, so the Engine (Rust FFI,
+`engine/llama/src/ffi/llama_cpp.rs`) can render a prompt with the model's own Jinja template and read its
+thinking tags without C++ types.
+
+| File | Change |
+|---|---|
+| `common/chat.h` | appended at the end of the file, in one `extern "C" { }` block: the `LLAMA_COMMON_API` macro (`__declspec(dllexport)` on Windows, `visibility("default")` elsewhere) and the declarations of the five functions below, plus the opaque `struct llama_chat_templates_handle` |
+| `common/chat.cpp` | appended at the end of the file, in one `extern "C" { }` block: the five functions and the static helper `llama_chat_render_with_templates` |
+
+The functions:
+
+- `llama_chat_extract_thinking_tags(model, custom_tmpl, out_start, max_start_len, out_end, max_end_len)`:
+  `common_chat_templates_init`, then `common_chat_templates_apply` with `enable_thinking = true` and one user
+  message "hi"; when the result has `supports_thinking`, copies `thinking_start_tag` and the first of
+  `thinking_end_tags`. Returns false on any failure (exceptions are caught).
+- `llama_chat_apply_template_native(model, custom_tmpl, roles, contents, n_messages, add_ass, enable_thinking, buf, buf_size)`:
+  parses the template, then renders through `llama_chat_render_with_templates`.
+- `llama_chat_templates_handle_init(model, custom_tmpl)` / `llama_chat_templates_handle_free(handle)`: the
+  handle holds a `common_chat_templates_ptr`, parsed once per loaded model (`44cf982da`). It must be freed
+  before the model. NULL on failure.
+- `llama_chat_apply_template_handle(handle, roles, contents, n_messages, add_ass, enable_thinking, buf, buf_size)`:
+  same output as `llama_chat_apply_template_native`, without parsing again.
+- `llama_chat_render_with_templates` (static): fills `common_chat_templates_inputs` (`enable_thinking`,
+  `add_generation_prompt = add_ass`, one `common_chat_msg` per role/content), calls
+  `common_chat_templates_apply`, takes `params.prompt.str()` (`17d1465f0`: upstream's chat refactor made
+  `common_chat_params::prompt` a list of parts), copies at most `buf_size - 1` bytes plus a NUL and returns the
+  full prompt length, or -1 on an exception.
+
+Engine callers: `engine/llama/src/native/templater.rs` (handle init, render with the handle or the native
+call, thinking tags), `engine/llama/src/native/core.rs` (handle free), `engine/runtime/src/host.rs` (thinking
+tags).
+
+Re-apply after an upstream merge:
+
+1. Both blocks are appended at the end of the files, so a merge conflicts only when upstream also adds at the
+   end. Keep upstream's new lines and put the `extern "C"` block after them again.
+2. Check that the upstream names the code uses still exist in `common/chat.h`: `common_chat_templates_init`,
+   `common_chat_templates_apply`, `common_chat_templates_ptr`, `common_chat_templates_inputs` with
+   `enable_thinking`, `add_generation_prompt` and `messages`, `common_chat_msg` with `role` and `content`,
+   `common_chat_params` with `prompt` (and `common_chat_prompt::str()`), `supports_thinking`,
+   `thinking_start_tag`, `thinking_end_tags`. If one changed, adapt the C function body; keep the C signatures,
+   which the Rust declarations in `engine/llama/src/ffi/llama_cpp.rs` mirror.
+3. Build the Engine (`cargo build -p cmd`). A missing symbol fails the link. Check the exports:
+   `grep -c llama_chat_apply_template_handle target/debug/llama-common.dll` gives 1 (2026-11-23).
+4. Live check: one chat answer through the Engine with a thinking model (the prompt is rendered and the
+   thinking tags are found).
+
+### 2.2 M-RoPE KV shift (`447ab54f6`, the part that is left)
+
+What it does: lets the KV cache move positions (context shift, cache reuse) for models with M-RoPE
+(`n_pos_per_embd() > 1`), which upstream refuses.
+
+`src/llama-kv-cache.cpp`, three places:
+
+1. `llama_kv_cache::seq_add`: the line
+   `GGML_ASSERT(hparams.n_pos_per_embd() == 1 && "seq_add() is only supported for n_pos_per_embd() == 1");`
+   is commented out, with the note `// Bypass for M-RoPE multimodal models`.
+2. `llama_kv_cache::seq_div`: the same for its `seq_div()` assert.
+3. `llama_kv_cache::get_can_shift`: inside `if (hparams.n_pos_per_embd() > 1) {`, before `return false;`,
+   `if (hparams.rope_type == LLAMA_ROPE_TYPE_MROPE || hparams.rope_type == LLAMA_ROPE_TYPE_IMROPE) { return true; }`
+   with the comment `// Allow shifting for M-RoPE models (e.g. Qwen2-VL, Qwen3.5-VL)`.
+
+Effect in the Engine: `llama_memory_can_shift` returns true for these models, so `engine/llama/src/native/stream.rs`
+may shift or reuse the cache. The Engine still turns both off for prompts with media, for quantized keys and
+when `llama_memory_can_shift` is false (`stream.rs`, `can_shift`).
+
+Not checked in this note: whether the shifted positions are numerically right for M-RoPE models (upstream's
+asserts say the operation is not supported). No test of it was found or run for this note.
+
+Re-apply after an upstream merge:
+
+1. If the three places conflict, take upstream's version and redo the three edits above. Find them with
+   `git grep -n "n_pos_per_embd" -- src/llama-kv-cache.cpp`.
+2. Check that `LLAMA_ROPE_TYPE_MROPE` and `LLAMA_ROPE_TYPE_IMROPE` still exist in `include/llama.h`.
+3. Check: `git diff <upstream commit> HEAD -- src/llama-kv-cache.cpp` shows exactly these three hunks
+   (+6 -2), then build the Engine (`cargo build -p cmd`).
