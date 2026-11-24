@@ -30,6 +30,7 @@ set(LLAMA_CORE_SOURCES
     llama-memory.cpp
     llama-moe-cache.cpp
     llama-cluaiz-prefetch.cpp # cluaiz: fork-only, see CLUAIZ_PATCHES.md
+    llama-cluaiz-load.cpp # cluaiz: fork-only, see CLUAIZ_PATCHES.md
     llama-memory-hybrid.cpp
     llama-memory-hybrid-iswa.cpp
     llama-memory-hybrid-idx.cpp
@@ -49,6 +50,12 @@ set(LLAMA_CORE_SOURCES
 file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/llama-moe-cache.cpp CLUAIZ_MOE_PREFETCH_CALL REGEX "llama_cluaiz_moe_prefetch[(]backend")
 if (NOT CLUAIZ_MOE_PREFETCH_CALL)
     message(FATAL_ERROR "cluaiz: src/llama-moe-cache.cpp lost the llama_cluaiz_moe_prefetch call in copy(); re-apply it as CLUAIZ_PATCHES.md says")
+endif()
+
+# cluaiz: stop the build when a merge dropped the load prefetch ranges call (CLUAIZ_PATCHES.md)
+file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/llama-model-loader.cpp CLUAIZ_LOAD_RANGES_CALL REGEX "llama_cluaiz_mmap_lazy_ranges[(][*]this, idx[)]")
+if (NOT CLUAIZ_LOAD_RANGES_CALL)
+    message(FATAL_ERROR "cluaiz: src/llama-model-loader.cpp lost the llama_cluaiz_mmap_lazy_ranges call in init_mappings(); re-apply it as CLUAIZ_PATCHES.md says")
 endif()
 
 add_library(llama

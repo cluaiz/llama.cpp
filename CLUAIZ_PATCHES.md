@@ -152,3 +152,39 @@ Re-apply after an upstream merge:
 2. Check that `LLAMA_ROPE_TYPE_MROPE` and `LLAMA_ROPE_TYPE_IMROPE` still exist in `include/llama.h`.
 3. Check: `git diff <upstream commit> HEAD -- src/llama-kv-cache.cpp` shows exactly these three hunks
    (+6 -2), then build the Engine (`cargo build -p cmd`).
+
+## 3. Load prefetch skip for CPU-mapped weights (off by default)
+
+What it does: at load, `llama_mmap` asks the OS to read the whole file except upstream's lazy ranges (Linux
+`MAP_POPULATE` + `POSIX_MADV_WILLNEED`, Windows `PrefetchVirtualMemory`, `src/llama-mmap.cpp`). When the
+application calls `llama_cluaiz_set_lazy_host_weights(true)` on the loading thread, the fork adds to those lazy
+ranges every weight that stays mapped from the file in the CPU's default buffer type (the condition
+`is_default_buft` in `src/llama-model.cpp`, e.g. MoE experts kept on the CPU), unless the same weight is also in
+another context (copied at load). Those pages are then read on first use. Upstream's own mechanism does the rest:
+with lazy ranges, no `MAP_POPULATE`; `WILLNEED` / `PrefetchVirtualMemory` on the complement only; Linux also
+`POSIX_MADV_RANDOM` on the lazy ranges. Nothing else of the lazy-tensor feature (`lazy_read`, row gathering) is
+used. Off unless the setter is called, so with the setter unused this fork behaves like upstream.
+
+Why not upstream's settings: upstream has no setting for the load prefetch (`init_mappings(true, ...)` is fixed
+in `src/llama-model.cpp`), and its `lazy_mode` marks only tensors the architecture flags as `TENSOR_READ_LAZY`
+(per-layer token embeddings) and moves them to a row-gather path, which experts must not take (checked in
+`competitor-repos/llama.cpp` at `d3c3e24`, 2026-11-16).
+
+| File | Kind | Change |
+|---|---|---|
+| `include/llama-cluaiz.h` | fork only | `llama_cluaiz_set_lazy_host_weights(bool)`, thread-local, default false |
+| `src/llama-cluaiz-load.h`, `src/llama-cluaiz-load.cpp` | new, fork only | the setter and `llama_cluaiz_mmap_lazy_ranges(ml, idx)`: `ml.lazy.for_file(idx)` plus the CPU-mapped weight ranges when on; one log line `llama_cluaiz_lazy_host_weights: file N: M MiB of CPU-mapped weights left out of the load prefetch` |
+| `src/llama-model-loader.cpp` | upstream, 2 lines | `#include "llama-cluaiz-load.h"` after `#include "llama-model-loader.h"`; in `init_mappings()` the last argument of `std::make_unique<llama_mmap>(...)` is `llama_cluaiz_mmap_lazy_ranges(*this, idx)` instead of `lazy.for_file(idx)` |
+| `src/CMakeLists.txt` | upstream, 2 places | `llama-cluaiz-load.cpp` in `LLAMA_CORE_SOURCES` after `llama-cluaiz-prefetch.cpp`; a second guard block before `add_library(llama` that stops the configure step when the call is missing from `llama-model-loader.cpp` |
+
+### Re-apply after an upstream merge
+
+1. If `src/llama-model-loader.cpp` conflicts, keep upstream's version and re-add the two marked lines. If
+   upstream renamed `lazy.for_file`, change `llama-cluaiz-load.cpp` to call the new name.
+2. Check that the names the fork file uses still exist: `llama_model_loader::{lazy, use_mmap, ctx_map,
+   get_weight}`, `ctx_key::buft`, `llama_tensor_weight::{idx, offs}`, `llama_mmap::ranges`, and that the CPU
+   default buffer type is still the one condition for wrapping the mapping (`is_default_buft` in
+   `llama-model.cpp`). If the mapping condition changed, follow it in `llama-cluaiz-load.cpp`.
+3. Build (`cargo build -p cmd`); the guard fails the configure step if the call is gone.
+4. Live check: a load with `CLUAIZ_LAZY_HOST_WEIGHTS=on` and a model larger than free RAM prints the log line
+   above with a non-zero MiB (`engine/llama/README.md`).

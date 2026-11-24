@@ -1,4 +1,5 @@
 #include "llama-model-loader.h"
+#include "llama-cluaiz-load.h" // cluaiz: fork-only load prefetch ranges, see CLUAIZ_PATCHES.md
 
 #include "ggml-alloc.h"
 #include "ggml.h"
@@ -1524,7 +1525,7 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
             const size_t prefetch_size = prefetch && use_mmap ? -1 : 0;
 
             std::unique_ptr<llama_mmap> mapping = std::make_unique<llama_mmap>(file.get(), prefetch_size, is_numa,
-                    lazy.for_file(idx));
+                    llama_cluaiz_mmap_lazy_ranges(*this, idx)); // cluaiz: lazy.for_file(idx) plus the fork's ranges, see CLUAIZ_PATCHES.md
             mmaps_used.emplace_back(mapping->size(), 0);
             if (mlock_mmaps) {
                 std::unique_ptr<llama_mlock> mlock_mmap(new llama_mlock());
