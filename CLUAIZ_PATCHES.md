@@ -39,7 +39,16 @@ whatever the range length (upstream PR #32515, open on 2026-11-22). The fork fil
 128 KiB window on Linux instead of editing it. If #32515 (or a similar change) is merged upstream, drop the window
 loop in `llama-cluaiz-prefetch.cpp` and pass the ranges in one call as on Windows.
 
-Known limit: `llama_prefetch` logs one warning per failed call (upstream behaviour, not changed here).
+Windows asks each expert slice once per context (since run 60, 2026-11-24): `PrefetchVirtualMemory` runs on the
+calling thread and costs about 43 us per MiB for pages already in the working set and about 85 us per MiB for
+pages on the standby list, and saves nothing for them; only pages read from the disk gain (run 60
+micro-benchmark, `test/cloud/runs/2026-11-24-run60-windows-prefetch-cost/`). Run 44 asked 173-215 GB per run for 11.5 GB of experts.
+`llama-cluaiz-prefetch.cpp` keeps the addresses already asked in the context's entry and skips them (`ask_once`,
+`_WIN32` only); the cap now counts only the ranges really asked. Linux is unchanged (asks every time). The end
+line reports the skipped MiB.
+
+Known limit: `llama_prefetch` logs one warning per failed call (upstream behaviour, not changed here). A slice
+evicted after it was asked is read by page faults again on Windows (as with the prefetch off).
 
 ### Re-apply after an upstream merge
 

@@ -10,6 +10,7 @@
 #include <atomic>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace {
@@ -19,6 +20,9 @@ struct prefetch_state {
     size_t calls  = 0;
     size_t ranges = 0;
     size_t bytes  = 0;
+    size_t skipped_bytes = 0;
+    // Windows: the expert slices already asked for in this context (their addresses)
+    std::unordered_set<const void *> asked;
 };
 
 // keyed by the GPU backends of a context: the MoE cache copy() only knows its backend
@@ -31,6 +35,18 @@ std::atomic<size_t> g_n_on{0}; // lets copy() skip the lock while no context has
 constexpr size_t readahead_window = 128*1024;
 #else
 constexpr size_t readahead_window = 0; // Windows: all ranges in one PrefetchVirtualMemory call
+#endif
+
+// Windows: PrefetchVirtualMemory runs on the calling thread and costs about 43 us per MiB for pages already in
+// the working set and about 85 us per MiB for pages on the standby list, and it saves nothing for them (the
+// first touch still soft-faults); only pages read from the disk gain (run 60 micro-benchmark, 15 MiB per call:
+// cold touch 36-39 ms without, 12-14 ms call + 7-9 ms touch with). Run 44 asked 173-215 GB per run for 11.5 GB
+// of experts, so each slice is asked for once per context. A slice evicted later is read by page faults again,
+// as without the prefetch. Linux keeps asking every time (run 43 measured that, madvise on resident pages).
+#if defined(_WIN32)
+constexpr bool ask_once = true;
+#else
+constexpr bool ask_once = false;
 #endif
 
 bool is_gpu(ggml_backend_t backend) {
@@ -49,11 +65,47 @@ size_t llama_cluaiz_moe_prefetch_cap(ggml_backend_t backend) {
     return it == g_state.end() ? 0 : it->second.cap;
 }
 
-void llama_cluaiz_moe_prefetch_ranges(ggml_backend_t backend, llama_memory_ranges && mr, size_t bytes) {
+void llama_cluaiz_moe_prefetch_ranges(ggml_backend_t backend, llama_memory_ranges && candidates, size_t cap) {
+    if (candidates.empty()) {
+        return;
+    }
+    llama_memory_ranges mr;
+    size_t bytes = 0;
+    bool first = false;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        const auto it = g_state.find(backend);
+        if (it == g_state.end()) {
+            return;
+        }
+        prefetch_state & st = it->second;
+        for (const auto & range : candidates) {
+            if (ask_once && st.asked.count(range.addr)) {
+                st.skipped_bytes += range.size;
+                continue;
+            }
+            if (bytes + range.size > cap) {
+                break;
+            }
+            if (ask_once) {
+                st.asked.insert(range.addr);
+            }
+            mr.push_back(range);
+            bytes += range.size;
+        }
+        if (!mr.empty()) {
+            first = st.calls == 0;
+            st.calls  += 1;
+            st.ranges += mr.size();
+            st.bytes  += bytes;
+        }
+    }
     if (mr.empty()) {
         return;
     }
-    const size_t n_ranges = mr.size();
+    if (first) {
+        LLAMA_LOG_INFO("llama_cluaiz_moe_prefetch: first prefetch: %zu ranges, %zu KiB\n", mr.size(), bytes/1024);
+    }
     if (readahead_window == 0) {
         llama_prefetch(std::move(mr));
     } else {
@@ -63,19 +115,6 @@ void llama_cluaiz_moe_prefetch_ranges(ggml_backend_t backend, llama_memory_range
             }
         }
     }
-
-    std::lock_guard<std::mutex> lock(g_mutex);
-    const auto it = g_state.find(backend);
-    if (it == g_state.end()) {
-        return;
-    }
-    prefetch_state & st = it->second;
-    if (st.calls == 0) {
-        LLAMA_LOG_INFO("llama_cluaiz_moe_prefetch: first prefetch: %zu ranges, %zu KiB\n", n_ranges, bytes/1024);
-    }
-    st.calls  += 1;
-    st.ranges += n_ranges;
-    st.bytes  += bytes;
 }
 
 void llama_cluaiz_set_moe_prefetch(llama_context * ctx, size_t max_bytes) {
@@ -104,6 +143,7 @@ void llama_cluaiz_set_moe_prefetch(llama_context * ctx, size_t max_bytes) {
             total.calls  += it->second.calls;
             total.ranges += it->second.ranges;
             total.bytes  += it->second.bytes;
+            total.skipped_bytes += it->second.skipped_bytes;
             g_state.erase(it);
         }
     }
@@ -112,6 +152,7 @@ void llama_cluaiz_set_moe_prefetch(llama_context * ctx, size_t max_bytes) {
     if (max_bytes > 0) {
         LLAMA_LOG_INFO("llama_cluaiz_moe_prefetch: on, at most %zu MiB per MoE cache upload\n", max_bytes/1024/1024);
     } else if (was_on) {
-        LLAMA_LOG_INFO("llama_cluaiz_moe_prefetch: off: %zu calls, %zu ranges, %zu MiB prefetched\n", total.calls, total.ranges, total.bytes/1024/1024);
+        LLAMA_LOG_INFO("llama_cluaiz_moe_prefetch: off: %zu calls, %zu ranges, %zu MiB prefetched, %zu MiB skipped as asked before\n",
+                total.calls, total.ranges, total.bytes/1024/1024, total.skipped_bytes/1024/1024);
     }
 }
